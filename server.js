@@ -7,24 +7,28 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-const waiting = new Set();
+const videoWaiting = new Set();
+const textWaiting = new Set();
 const partners = new Map();
+const modes = new Map();
 
 let onlineUsers = 0;
 
 app.use(express.static(__dirname));
 
-function pair() {
-  const u = [...waiting];
+function pair(queue) {
+  const users = [...queue];
 
-  while (u.length >= 2) {
-    const a = u.shift();
-    const b = u.shift();
+  while (users.length >= 2) {
+    const a = users.shift();
+    const b = users.shift();
 
-    if (!io.sockets.sockets.has(a) || !io.sockets.sockets.has(b)) continue;
+    if (!io.sockets.sockets.has(a) || !io.sockets.sockets.has(b)) {
+      continue;
+    }
 
-    waiting.delete(a);
-    waiting.delete(b);
+    queue.delete(a);
+    queue.delete(b);
 
     partners.set(a, b);
     partners.set(b, a);
@@ -39,67 +43,122 @@ function sendOnlineCount() {
 }
 
 io.on("connection", (s) => {
+
   onlineUsers++;
   sendOnlineCount();
 
-  s.on("joinQueue", () => {
+  s.on("joinQueue", ({ mode }) => {
+
     if (partners.has(s.id)) return;
 
-    waiting.add(s.id);
-    s.emit("searching");
-    pair();
+    modes.set(s.id, mode);
+
+    if (mode === "video") {
+      videoWaiting.add(s.id);
+      s.emit("searching");
+      pair(videoWaiting);
+    }
+
+    if (mode === "text") {
+      textWaiting.add(s.id);
+      s.emit("searching");
+      pair(textWaiting);
+    }
   });
 
+
   s.on("signal", ({ to, data }) => {
+
     if (to && io.sockets.sockets.has(to)) {
+
       io.to(to).emit("signal", {
         from: s.id,
         data
       });
+
     }
   });
 
-  s.on("chat", (m) => {
-    const p = partners.get(s.id);
 
-    if (p) {
-      io.to(p).emit(
+  s.on("chat", (message) => {
+
+    const partner = partners.get(s.id);
+
+    if (partner) {
+
+      io.to(partner).emit(
         "chat",
-        String(m).slice(0, 1000)
+        String(message).slice(0, 1000)
       );
+
     }
   });
 
-  s.on("next", () => {
-    const p = partners.get(s.id);
+
+  s.on("next", ({ mode }) => {
+
+    const partner = partners.get(s.id);
 
     partners.delete(s.id);
 
-    if (p) {
-      partners.delete(p);
-      io.to(p).emit("partnerLeft");
-      waiting.add(p);
+    if (partner) {
+
+      partners.delete(partner);
+
+      io.to(partner).emit("partnerLeft");
+
+      const partnerMode = modes.get(partner);
+
+      if (partnerMode === "video") {
+        videoWaiting.add(partner);
+      }
+
+      if (partnerMode === "text") {
+        textWaiting.add(partner);
+      }
     }
 
-    waiting.add(s.id);
-    s.emit("searching");
-    pair();
+    if (mode === "video") {
+
+      videoWaiting.add(s.id);
+      s.emit("searching");
+      pair(videoWaiting);
+
+    }
+
+    if (mode === "text") {
+
+      textWaiting.add(s.id);
+      s.emit("searching");
+      pair(textWaiting);
+
+    }
   });
+
 
   s.on("disconnect", () => {
-    waiting.delete(s.id);
 
-    const p = partners.get(s.id);
+    videoWaiting.delete(s.id);
+    textWaiting.delete(s.id);
+
+    const partner = partners.get(s.id);
+
     partners.delete(s.id);
+    modes.delete(s.id);
 
-    if (p) {
-      partners.delete(p);
-      io.to(p).emit("partnerLeft");
+    if (partner) {
+
+      partners.delete(partner);
+
+      io.to(partner).emit("partnerLeft");
+
     }
 
     onlineUsers = Math.max(0, onlineUsers - 1);
+
     sendOnlineCount();
   });
+
 });
 
 server.listen(process.env.PORT || 3000, () => {
