@@ -30,10 +30,11 @@ let localStream = null;
 let pc = null;
 let partnerId = null;
 let currentMode = null;
+let pendingCandidates = [];
 
 
 // =========================
-// START VIDEO CHAT
+// VIDEO MODE
 // =========================
 
 videoMode.onclick = async () => {
@@ -46,21 +47,25 @@ videoMode.onclick = async () => {
   currentMode = "video";
 
   welcome.classList.add("hidden");
-  videoApp.classList.remove("hidden");
   textApp.classList.add("hidden");
+  videoApp.classList.remove("hidden");
 
-  videoStatus.textContent = "🔎 Telugu stranger కోసం searching…";
+  videoStatus.textContent =
+    "🔎 Telugu stranger కోసం searching…";
 
   try {
 
-    localStream = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true
-    });
+    localStream =
+      await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true
+      });
 
     localVideo.srcObject = localStream;
 
   } catch (error) {
+
+    console.error(error);
 
     videoStatus.textContent =
       "Camera permission unavailable.";
@@ -77,7 +82,7 @@ videoMode.onclick = async () => {
 
 
 // =========================
-// START TEXT CHAT
+// TEXT MODE
 // =========================
 
 textMode.onclick = () => {
@@ -90,8 +95,8 @@ textMode.onclick = () => {
   currentMode = "text";
 
   welcome.classList.add("hidden");
-  textApp.classList.remove("hidden");
   videoApp.classList.add("hidden");
+  textApp.classList.remove("hidden");
 
   textStatus.textContent =
     "🔎 Telugu stranger కోసం searching…";
@@ -117,6 +122,7 @@ socket.on("searching", () => {
     textStatus.textContent =
       "🔎 Telugu stranger కోసం searching…";
   }
+
 });
 
 
@@ -131,24 +137,29 @@ socket.on("matched", async ({ partner }) => {
   if (currentMode === "video") {
 
     videoStatus.textContent =
-      "🟢 Connected! Say hi 👋";
+      "🟢 Connected! Connecting video…";
 
     await createPeer(true);
+
   }
 
   if (currentMode === "text") {
 
     textStatus.textContent =
       "🟢 Connected! Say hi 👋";
+
   }
+
 });
 
 
 // =========================
-// WEBRTC
+// CREATE PEER
 // =========================
 
 async function createPeer(isInitiator) {
+
+  pendingCandidates = [];
 
   pc = new RTCPeerConnection({
 
@@ -164,7 +175,9 @@ async function createPeer(isInitiator) {
   if (localStream) {
 
     localStream.getTracks().forEach(track => {
+
       pc.addTrack(track, localStream);
+
     });
 
   }
@@ -191,8 +204,36 @@ async function createPeer(isInitiator) {
 
   pc.ontrack = event => {
 
-    remoteVideo.srcObject =
-      event.streams[0];
+    console.log("REMOTE STREAM RECEIVED");
+
+    if (event.streams && event.streams[0]) {
+
+      remoteVideo.srcObject =
+        event.streams[0];
+
+      videoStatus.textContent =
+        "🟢 Stranger connected! Say hi 👋";
+
+    }
+
+  };
+
+
+  pc.onconnectionstatechange = () => {
+
+    console.log(
+      "Connection state:",
+      pc.connectionState
+    );
+
+    if (
+      pc.connectionState === "connected"
+    ) {
+
+      videoStatus.textContent =
+        "🟢 Stranger connected! Say hi 👋";
+
+    }
 
   };
 
@@ -227,6 +268,7 @@ socket.on("signal", async ({ from, data }) => {
 
   partnerId = from;
 
+
   if (!pc) {
 
     await createPeer(false);
@@ -236,7 +278,9 @@ socket.on("signal", async ({ from, data }) => {
 
   if (data.sdp) {
 
-    await pc.setRemoteDescription(data.sdp);
+    await pc.setRemoteDescription(
+      new RTCSessionDescription(data.sdp)
+    );
 
 
     if (data.sdp.type === "offer") {
@@ -258,20 +302,58 @@ socket.on("signal", async ({ from, data }) => {
 
     }
 
+
+    // Add candidates received before SDP
+    for (
+      const candidate of pendingCandidates
+    ) {
+
+      try {
+
+        await pc.addIceCandidate(
+          new RTCIceCandidate(candidate)
+        );
+
+      } catch (error) {
+
+        console.error(
+          "Pending ICE error:",
+          error
+        );
+
+      }
+
+    }
+
+    pendingCandidates = [];
+
   }
 
 
   if (data.candidate) {
 
-    try {
+    if (pc.remoteDescription) {
 
-      await pc.addIceCandidate(
+      try {
+
+        await pc.addIceCandidate(
+          new RTCIceCandidate(data.candidate)
+        );
+
+      } catch (error) {
+
+        console.error(
+          "ICE error:",
+          error
+        );
+
+      }
+
+    } else {
+
+      pendingCandidates.push(
         data.candidate
       );
-
-    } catch (error) {
-
-      console.log(error);
 
     }
 
@@ -345,6 +427,7 @@ function goNext() {
   closeVideo();
 
   partnerId = null;
+  pendingCandidates = [];
 
   if (currentMode === "video") {
 
@@ -352,6 +435,7 @@ function goNext() {
       "🔎 Finding a new Telugu stranger…";
 
   }
+
 
   if (currentMode === "text") {
 
@@ -365,6 +449,7 @@ function goNext() {
       "🔎 Finding a new Telugu stranger…";
 
   }
+
 
   socket.emit("next", {
     mode: currentMode
@@ -429,6 +514,7 @@ socket.on("partnerLeft", () => {
   closeVideo();
 
   partnerId = null;
+  pendingCandidates = [];
 
   if (currentMode === "video") {
 
@@ -462,17 +548,13 @@ socket.on("partnerLeft", () => {
 
 videoReport.onclick = () => {
 
-  alert(
-    "Report submitted. Thank you."
-  );
+  alert("Report submitted. Thank you.");
 
 };
 
 
 textReport.onclick = () => {
 
-  alert(
-    "Report submitted. Thank you."
-  );
+  alert("Report submitted. Thank you.");
 
 };
